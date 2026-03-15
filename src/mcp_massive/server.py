@@ -451,11 +451,19 @@ def run(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") -> None
     fetched.
     """
     import os
+    import uvicorn
     if transport == "streamable-http":
-        import uvicorn
         host = os.environ.get("HOST", "0.0.0.0")
         port = int(os.environ.get("PORT", "8000"))
         app = mass_mcp.streamable_http_app()
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            forwarded_allow_ips="*",
+            proxy_headers=True,
+        )
+    else:
+        mass_mcp.run(transport)
     else:
         mass_mcp.run(transport)
