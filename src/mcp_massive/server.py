@@ -18,8 +18,6 @@ from .functions import FunctionIndex, apply_pipeline
 from .index import build_index, EndpointIndex
 from .store import DataFrameStore, Table
 
-# Reject unknown tool arguments so LLMs get a clear error instead of silent
-# fallback to defaults.  Must be set before any @tool decorators run.
 ArgModelBase.model_config["extra"] = "forbid"
 
 logger = logging.getLogger(__name__)
@@ -30,7 +28,6 @@ try:
 except PackageNotFoundError:
     pass
 
-# Index is built lazily on first use or explicitly via run()
 _init_lock = threading.Lock()
 _index: EndpointIndex | None = None
 _func_index: FunctionIndex | None = None
@@ -60,7 +57,6 @@ METADATA_KEYS = {
 
 MAX_RESPONSE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-# Credentials and config stored in-process so env vars can be cleared after startup.
 _api_key: str = ""
 _base_url: str = "https://api.massive.com"
 _llms_txt_url: str | None = None
@@ -75,7 +71,6 @@ def configure_credentials(
     max_tables: int | None = None,
     max_rows: int | None = None,
 ) -> None:
-    """Store API credentials and config in module-level variables."""
     global _api_key, _base_url, _llms_txt_url, _max_tables, _max_rows
     with _init_lock:
         _api_key = api_key
@@ -86,12 +81,10 @@ def configure_credentials(
 
 
 def _get_api_key() -> str:
-    """Return the configured API key."""
     return _api_key
 
 
 def _get_base_url() -> str:
-    """Return the configured base URL."""
     return _base_url
 
 
@@ -138,14 +131,12 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 def _close_http_client() -> None:
-    """Close the httpx client at process exit to release connections."""
     global _http_client
     client = _http_client
     if client is not None:
         _http_client = None
         try:
             import asyncio
-
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(client.aclose())
@@ -156,12 +147,6 @@ def _close_http_client() -> None:
 
 
 def _extract_pagination_hint(json_text: str) -> str | None:
-    """Extract next_url from raw API JSON and format as a call_api hint.
-
-    Parses the next_url into path + params so the LLM can paginate
-    by passing them directly to call_api.  Strips the API key from the
-    query string to avoid leaking credentials.
-    """
     try:
         data = json.loads(json_text)
     except (json.JSONDecodeError, TypeError):
@@ -176,10 +161,8 @@ def _extract_pagination_hint(json_text: str) -> str | None:
     if not path:
         return None
     params = parse_qs(parsed.query, keep_blank_values=True)
-    # Security: strip API key — it's provided via the Authorization header
     params.pop("apiKey", None)
     params.pop("apikey", None)
-    # Flatten single-value lists
     flat_params = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
     if flat_params:
         return (
@@ -297,11 +280,9 @@ async def call_api(
     """Fetch financial market data (stock prices, options, trades, quotes, aggregates, crypto, forex). Only GET requests are supported. The path should match an endpoint pattern from search_endpoints (e.g., /v2/aggs/ticker/AAPL/range/1/day/2024-01-01/2024-01-31). Query parameters are passed as a dictionary via params. If the response is paginated, a "Next page available" hint with the exact path and params for the next call_api request is appended to the output. Optionally set store_as to a table name (e.g., "prices") to save the results as an in-memory table for later SQL querying with query_data, instead of returning CSV. Optionally set apply to a list of function steps to post-process results — each step is {"function": "name", "inputs": {"param": value}, "output": "col_name"}. String input values refer to column names; numeric values are literals. Use search_endpoints with scope="functions" to discover available functions."""
     idx = await _get_index()
 
-    # Security: only GET allowed
     if method.upper() != "GET":
         return f"Error [INVALID_REQUEST]: Only GET method is allowed, got {method}"
 
-    # Security: block path traversal (fully decode to catch double-encoding)
     prev = path
     decoded_path = unquote(prev)
     while decoded_path != prev:
@@ -310,22 +291,17 @@ async def call_api(
     if ".." in decoded_path or "\\" in decoded_path:
         return "Error [INVALID_REQUEST]: Invalid path — path traversal not allowed"
 
-    # Security: reject query string or fragment embedded in the path, which
-    # would bypass the per-key query-parameter validation below.
     if "?" in decoded_path or "#" in decoded_path:
         return "Error [INVALID_REQUEST]: path must not contain query string or fragment — pass parameters via params"
 
-    # Security: check path against allowlist
     if not idx.is_path_allowed(path):
         return f"Error [NOT_FOUND]: Path not in allowlist: {path}. Use search_endpoints to find the correct path."
 
-    # Security: validate query param keys
     if params:
         for key in params:
             if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", key):
                 return f"Error [INVALID_REQUEST]: Invalid query parameter key: {key}"
 
-    # Build request
     effective_key = api_key if api_key else _get_api_key()
     if not effective_key:
         return "Error [AUTH]: MASSIVE_API_KEY is not set."
@@ -365,16 +341,13 @@ async def call_api(
     if len(json_text) > MAX_RESPONSE_SIZE_BYTES:
         return f"Error [TOO_LARGE]: Response too large ({len(json_text) // (1024 * 1024)} MB). Narrow your query."
 
-    # Extract pagination hint before stripping metadata
     pagination_hint = _extract_pagination_hint(json_text) or ""
 
-    # Strip metadata
     try:
         stripped = strip_response_metadata(json_text, METADATA_KEYS)
     except Exception:
         return json_text
 
-    # If store_as is provided, store as DataFrame and return summary
     if store_as is not None:
         try:
             records = extract_records(stripped)
@@ -388,7 +361,6 @@ async def call_api(
                 f"Preview (first 5 rows):\n{summary.preview}"
             )
 
-            # Apply functions if requested
             if apply:
                 try:
                     tbl = store.get_table(store_as)
@@ -406,7 +378,6 @@ async def call_api(
         except ValueError as e:
             return f"Error: {e}"
 
-    # No store_as: return CSV, optionally with apply
     try:
         if apply:
             records = extract_records(stripped)
@@ -479,4 +450,7 @@ def run(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") -> None
     ``initialize`` immediately without waiting for all doc pages to be
     fetched.
     """
-    mass_mcp.run(transport)
+    import os
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    mass_mcp.run(transport, host=host, port=port)
