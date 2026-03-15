@@ -465,5 +465,3 @@ def run(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") -> None
         )
     else:
         mass_mcp.run(transport)
-    else:
-        mass_mcp.run(transport)
