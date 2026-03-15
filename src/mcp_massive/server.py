@@ -451,6 +451,11 @@ def run(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") -> None
     fetched.
     """
     import os
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8000"))
-    mass_mcp.run(transport, host=host, port=port)
+    if transport == "streamable-http":
+        import uvicorn
+        host = os.environ.get("HOST", "0.0.0.0")
+        port = int(os.environ.get("PORT", "8000"))
+        app = mass_mcp.streamable_http_app()
+        uvicorn.run(app, host=host, port=port)
+    else:
+        mass_mcp.run(transport)
